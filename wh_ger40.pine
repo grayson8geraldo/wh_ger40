@@ -1,0 +1,412 @@
+// This Pine Script™ source code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © WH GER40 Bounce Indicator
+
+//@version=5
+indicator("WH GER40 Bounce", overlay=true, max_lines_count=500, max_labels_count=500, max_boxes_count=200)
+
+// ─────────────────────────────────────────────
+// INPUTS
+// ─────────────────────────────────────────────
+
+// --- Trend Ribbon ---
+grp_ribbon = "Trend Ribbon"
+i_ribbon_type   = input.string("EMA", "MA Type", options=["EMA","SMA","HMA","DEMA","VWAP"], group=grp_ribbon)
+i_ribbon_len    = input.int(200, "Length", minval=1, group=grp_ribbon, tooltip="Ignored when VWAP is selected")
+i_ribbon_src    = input.source(close, "Source", group=grp_ribbon)
+i_ribbon_tf     = input.timeframe("", "Timeframe (MTF)", group=grp_ribbon, tooltip="Leave blank to use chart TF. Set higher TF for multi-timeframe filtering.")
+
+// --- Entry Signals: General ---
+grp_sig = "Entry Signals"
+i_sig_lookback  = input.int(50, "Deviation Lookback", minval=5, group=grp_sig)
+i_sig_method    = input.string("StdDev", "Deviation Method", options=["StdDev","ATR"], group=grp_sig)
+i_sig_src       = input.source(close, "Signal Source", group=grp_sig)
+
+// --- Entry Signals: Tier Multipliers ---
+grp_tiers = "Signal Tiers"
+i_t1_mult  = input.float(1.5, "Tier 1 Multiplier (Circles)", minval=0.1, step=0.1, group=grp_tiers)
+i_t2_mult  = input.float(2.5, "Tier 2 Multiplier (Triangles)", minval=0.1, step=0.1, group=grp_tiers)
+i_t3_mult  = input.float(3.5, "Tier 3 Multiplier (Diamonds)", minval=0.1, step=0.1, group=grp_tiers)
+i_t1_show  = input.bool(true, "Show Tier 1", group=grp_tiers)
+i_t2_show  = input.bool(true, "Show Tier 2", group=grp_tiers)
+i_t3_show  = input.bool(true, "Show Tier 3", group=grp_tiers)
+i_show_bands = input.bool(true, "Show Deviation Bands", group=grp_tiers)
+
+// --- Liquidity Levels ---
+grp_liq = "Liquidity Levels"
+i_liq_tf1       = input.timeframe("D", "Primary TF", group=grp_liq, tooltip="Solid lines. Default: Daily")
+i_liq_tf2       = input.timeframe("240", "Secondary TF", group=grp_liq, tooltip="Dashed lines. Default: 4H")
+i_liq_lookback  = input.int(5, "Pivot Lookback (bars)", minval=1, maxval=20, group=grp_liq)
+i_liq_depth     = input.int(5, "Levels to Track", minval=1, maxval=10, group=grp_liq)
+i_liq_show      = input.bool(true, "Show Liquidity Levels", group=grp_liq)
+
+// --- Algorithm ---
+grp_algo = "Trading Algorithm"
+i_algo_enabled     = input.bool(true, "Enable TP/SL Visualization", group=grp_algo)
+i_algo_rr          = input.float(1.0, "Risk:Reward Ratio", minval=0.1, step=0.1, group=grp_algo)
+
+// --- Visual ---
+grp_vis = "Visual Settings"
+i_bull_color    = input.color(color.new(#26a69a, 0), "Bullish Color", group=grp_vis)
+i_bear_color    = input.color(color.new(#ef5350, 0), "Bearish Color", group=grp_vis)
+i_ribbon_opacity = input.int(85, "Ribbon Opacity", minval=0, maxval=100, group=grp_vis)
+i_liq_d_color   = input.color(color.new(#ff9800, 0), "Daily Liq. Color", group=grp_vis)
+i_liq_4h_color  = input.color(color.new(#42a5f5, 0), "Secondary Liq. Color", group=grp_vis)
+i_t1_color      = input.color(color.new(#aaaaaa, 0), "Tier 1 Color", group=grp_vis)
+i_t2_color      = input.color(color.new(#ffeb3b, 0), "Tier 2 Color", group=grp_vis)
+i_t3_color      = input.color(color.new(#e040fb, 0), "Tier 3 Color", group=grp_vis)
+
+// ─────────────────────────────────────────────
+// FUNCTIONS
+// ─────────────────────────────────────────────
+
+f_ma(float src, int len, string maType) =>
+    switch maType
+        "EMA"  => ta.ema(src, len)
+        "SMA"  => ta.sma(src, len)
+        "HMA"  => ta.hma(src, len)
+        "DEMA" => 2 * ta.ema(src, len) - ta.ema(ta.ema(src, len), len)
+        "VWAP" => ta.vwap(hlc3)
+        => ta.ema(src, len)
+
+f_deviation(float src, int len, string method) =>
+    switch method
+        "StdDev" => ta.stdev(src, len)
+        "ATR"    => ta.atr(len)
+        => ta.stdev(src, len)
+
+// ─────────────────────────────────────────────
+// TREND RIBBON
+// ─────────────────────────────────────────────
+
+ribbon_raw = f_ma(i_ribbon_src, i_ribbon_len, i_ribbon_type)
+ribbon_val = i_ribbon_tf == "" ? ribbon_raw : request.security(syminfo.tickerid, i_ribbon_tf, f_ma(i_ribbon_src, i_ribbon_len, i_ribbon_type), barmerge.gaps_off, barmerge.lookahead_off)
+
+is_bullish = close > ribbon_val
+is_bearish = close < ribbon_val
+ribbon_color = is_bullish ? i_bull_color : i_bear_color
+
+plot_ribbon = plot(ribbon_val, "Trend Ribbon", color=ribbon_color, linewidth=2)
+plot_price  = plot(close, "Price", color=na, display=display.none)
+fill(plot_ribbon, plot_price, color=color.new(ribbon_color, i_ribbon_opacity), title="Ribbon Fill")
+
+// ─────────────────────────────────────────────
+// DEVIATION BANDS & SIGNALS
+// ─────────────────────────────────────────────
+
+mean_val = ta.sma(i_sig_src, i_sig_lookback)
+dev_val  = f_deviation(i_sig_src, i_sig_lookback, i_sig_method)
+
+// Band levels
+upper_t1 = mean_val + dev_val * i_t1_mult
+lower_t1 = mean_val - dev_val * i_t1_mult
+upper_t2 = mean_val + dev_val * i_t2_mult
+lower_t2 = mean_val - dev_val * i_t2_mult
+upper_t3 = mean_val + dev_val * i_t3_mult
+lower_t3 = mean_val - dev_val * i_t3_mult
+
+// Plot bands
+plot(i_show_bands ? mean_val : na, "Mean", color=color.new(color.gray, 50), linewidth=1)
+plot(i_show_bands ? upper_t1 : na, "Upper T1", color=color.new(i_t1_color, 60), linewidth=1, style=plot.style_circles)
+plot(i_show_bands ? lower_t1 : na, "Lower T1", color=color.new(i_t1_color, 60), linewidth=1, style=plot.style_circles)
+plot(i_show_bands ? upper_t2 : na, "Upper T2", color=color.new(i_t2_color, 60), linewidth=1, style=plot.style_cross)
+plot(i_show_bands ? lower_t2 : na, "Lower T2", color=color.new(i_t2_color, 60), linewidth=1, style=plot.style_cross)
+plot(i_show_bands ? upper_t3 : na, "Upper T3", color=color.new(i_t3_color, 60), linewidth=1, style=plot.style_cross)
+plot(i_show_bands ? lower_t3 : na, "Lower T3", color=color.new(i_t3_color, 60), linewidth=1, style=plot.style_cross)
+
+// Signal detection — crossover/crossunder of deviation bands
+// Higher tiers suppress lower tiers on the same bar
+
+// Tier 3 (highest priority)
+t3_buy_raw  = ta.crossunder(i_sig_src, lower_t3) and is_bullish
+t3_sell_raw = ta.crossover(i_sig_src, upper_t3) and is_bearish
+
+// Tier 2
+t2_buy_raw  = ta.crossunder(i_sig_src, lower_t2) and is_bullish and not t3_buy_raw
+t2_sell_raw = ta.crossover(i_sig_src, upper_t2) and is_bearish and not t3_sell_raw
+
+// Tier 1 (lowest priority)
+t1_buy_raw  = ta.crossunder(i_sig_src, lower_t1) and is_bullish and not t2_buy_raw and not t3_buy_raw
+t1_sell_raw = ta.crossover(i_sig_src, upper_t1) and is_bearish and not t2_sell_raw and not t3_sell_raw
+
+// Apply visibility filters
+t1_buy  = i_t1_show and t1_buy_raw
+t1_sell = i_t1_show and t1_sell_raw
+t2_buy  = i_t2_show and t2_buy_raw
+t2_sell = i_t2_show and t2_sell_raw
+t3_buy  = i_t3_show and t3_buy_raw
+t3_sell = i_t3_show and t3_sell_raw
+
+any_buy  = t1_buy or t2_buy or t3_buy
+any_sell = t1_sell or t2_sell or t3_sell
+
+// Plot entry signals
+plotshape(t1_buy,  "T1 Buy",  shape.circle,      location.belowbar, i_t1_color, size=size.tiny)
+plotshape(t1_sell, "T1 Sell", shape.circle,      location.abovebar, i_t1_color, size=size.tiny)
+plotshape(t2_buy,  "T2 Buy",  shape.triangleup,  location.belowbar, i_t2_color, size=size.small)
+plotshape(t2_sell, "T2 Sell", shape.triangledown, location.abovebar, i_t2_color, size=size.small)
+plotshape(t3_buy,  "T3 Buy",  shape.diamond,     location.belowbar, i_t3_color, size=size.normal)
+plotshape(t3_sell, "T3 Sell", shape.diamond,      location.abovebar, i_t3_color, size=size.normal)
+
+// ─────────────────────────────────────────────
+// LIQUIDITY LEVELS
+// ─────────────────────────────────────────────
+
+// Pivot detection on higher timeframes
+f_pivot_high(int lb) => ta.pivothigh(high, lb, lb)
+f_pivot_low(int lb)  => ta.pivotlow(low, lb, lb)
+
+// Request pivots from higher TFs
+[ph1_raw, pl1_raw] = request.security(syminfo.tickerid, i_liq_tf1, [f_pivot_high(i_liq_lookback), f_pivot_low(i_liq_lookback)], barmerge.gaps_off, barmerge.lookahead_off)
+[ph2_raw, pl2_raw] = request.security(syminfo.tickerid, i_liq_tf2, [f_pivot_high(i_liq_lookback), f_pivot_low(i_liq_lookback)], barmerge.gaps_off, barmerge.lookahead_off)
+
+// Track multiple liquidity levels using var arrays
+var float[] liq_highs_tf1 = array.new_float(0)
+var float[] liq_lows_tf1  = array.new_float(0)
+var float[] liq_highs_tf2 = array.new_float(0)
+var float[] liq_lows_tf2  = array.new_float(0)
+
+// Helper to add unique level to array (avoid duplicates)
+f_add_level(float[] arr, float val, int maxSize) =>
+    if not na(val)
+        bool exists = false
+        for i = 0 to (array.size(arr) > 0 ? array.size(arr) - 1 : na)
+            if not na(i) and math.abs(array.get(arr, i) - val) < syminfo.mintick * 5
+                exists := true
+                break
+        if not exists
+            array.push(arr, val)
+            if array.size(arr) > maxSize
+                array.shift(arr)
+
+f_add_level(liq_highs_tf1, ph1_raw, i_liq_depth)
+f_add_level(liq_lows_tf1,  pl1_raw, i_liq_depth)
+f_add_level(liq_highs_tf2, ph2_raw, i_liq_depth)
+f_add_level(liq_lows_tf2,  pl2_raw, i_liq_depth)
+
+// Remove swept levels (price has traded through them)
+f_clean_swept(float[] arr, bool isHigh) =>
+    if array.size(arr) > 0
+        for i = array.size(arr) - 1 to 0
+            float lvl = array.get(arr, i)
+            if isHigh and close > lvl
+                array.remove(arr, i)
+            else if not isHigh and close < lvl
+                array.remove(arr, i)
+
+f_clean_swept(liq_highs_tf1, true)
+f_clean_swept(liq_lows_tf1,  false)
+f_clean_swept(liq_highs_tf2, true)
+f_clean_swept(liq_lows_tf2,  false)
+
+// Find nearest liquidity above and below current price
+f_nearest_above(float[] arr) =>
+    float nearest = na
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            float v = array.get(arr, i)
+            if v > close
+                if na(nearest) or v < nearest
+                    nearest := v
+    nearest
+
+f_nearest_below(float[] arr) =>
+    float nearest = na
+    if array.size(arr) > 0
+        for i = 0 to array.size(arr) - 1
+            float v = array.get(arr, i)
+            if v < close
+                if na(nearest) or v > nearest
+                    nearest := v
+    nearest
+
+// Nearest targets combining both timeframes
+nearest_liq_above_tf1 = f_nearest_above(liq_highs_tf1)
+nearest_liq_below_tf1 = f_nearest_below(liq_lows_tf1)
+nearest_liq_above_tf2 = f_nearest_above(liq_highs_tf2)
+nearest_liq_below_tf2 = f_nearest_below(liq_lows_tf2)
+
+// Overall nearest targets (closest from any TF)
+nearest_above = na(nearest_liq_above_tf1) ? nearest_liq_above_tf2 : na(nearest_liq_above_tf2) ? nearest_liq_above_tf1 : math.min(nearest_liq_above_tf1, nearest_liq_above_tf2)
+nearest_below = na(nearest_liq_below_tf1) ? nearest_liq_below_tf2 : na(nearest_liq_below_tf1) ? nearest_liq_below_tf1 : na(nearest_liq_below_tf2) ? nearest_liq_below_tf1 : math.max(nearest_liq_below_tf1, nearest_liq_below_tf2)
+
+// ─────────────────────────────────────────────
+// DRAW LIQUIDITY LINES
+// ─────────────────────────────────────────────
+
+var line[] liq_lines  = array.new_line(0)
+var label[] liq_labels = array.new_label(0)
+
+// Clear old drawings
+if barstate.islast and i_liq_show
+    // Delete previous
+    for i = 0 to array.size(liq_lines) - 1
+        line.delete(array.get(liq_lines, i))
+    array.clear(liq_lines)
+    for i = 0 to array.size(liq_labels) - 1
+        label.delete(array.get(liq_labels, i))
+    array.clear(liq_labels)
+
+    // Draw TF1 highs (solid)
+    if array.size(liq_highs_tf1) > 0
+        for i = 0 to array.size(liq_highs_tf1) - 1
+            float lvl = array.get(liq_highs_tf1, i)
+            if lvl > close
+                ln = line.new(bar_index - 20, lvl, bar_index + 20, lvl, color=i_liq_d_color, style=line.style_solid, width=2)
+                array.push(liq_lines, ln)
+                lb = label.new(bar_index + 22, lvl, str.tostring(lvl, format.mintick), color=color.new(color.black, 100), textcolor=i_liq_d_color, style=label.style_label_left, size=size.small)
+                array.push(liq_labels, lb)
+
+    // Draw TF1 lows (solid)
+    if array.size(liq_lows_tf1) > 0
+        for i = 0 to array.size(liq_lows_tf1) - 1
+            float lvl = array.get(liq_lows_tf1, i)
+            if lvl < close
+                ln = line.new(bar_index - 20, lvl, bar_index + 20, lvl, color=i_liq_d_color, style=line.style_solid, width=2)
+                array.push(liq_lines, ln)
+                lb = label.new(bar_index + 22, lvl, str.tostring(lvl, format.mintick), color=color.new(color.black, 100), textcolor=i_liq_d_color, style=label.style_label_left, size=size.small)
+                array.push(liq_labels, lb)
+
+    // Draw TF2 highs (dashed)
+    if array.size(liq_highs_tf2) > 0
+        for i = 0 to array.size(liq_highs_tf2) - 1
+            float lvl = array.get(liq_highs_tf2, i)
+            if lvl > close
+                ln = line.new(bar_index - 20, lvl, bar_index + 20, lvl, color=i_liq_4h_color, style=line.style_dashed, width=1)
+                array.push(liq_lines, ln)
+                lb = label.new(bar_index + 22, lvl, str.tostring(lvl, format.mintick), color=color.new(color.black, 100), textcolor=i_liq_4h_color, style=label.style_label_left, size=size.small)
+                array.push(liq_labels, lb)
+
+    // Draw TF2 lows (dashed)
+    if array.size(liq_lows_tf2) > 0
+        for i = 0 to array.size(liq_lows_tf2) - 1
+            float lvl = array.get(liq_lows_tf2, i)
+            if lvl < close
+                ln = line.new(bar_index - 20, lvl, bar_index + 20, lvl, color=i_liq_4h_color, style=line.style_dashed, width=1)
+                array.push(liq_lines, ln)
+                lb = label.new(bar_index + 22, lvl, str.tostring(lvl, format.mintick), color=color.new(color.black, 100), textcolor=i_liq_4h_color, style=label.style_label_left, size=size.small)
+                array.push(liq_labels, lb)
+
+// ─────────────────────────────────────────────
+// TRADING ALGORITHM: TP/SL & FILTER
+// ─────────────────────────────────────────────
+
+var float entry_price = na
+var float tp_price    = na
+var float sl_price    = na
+var bool  trade_long  = false
+var bool  trade_short = false
+var int   trade_bar   = na
+
+// Check if trade should close
+if trade_long and not na(tp_price) and not na(sl_price)
+    if high >= tp_price or low <= sl_price
+        entry_price := na
+        tp_price    := na
+        sl_price    := na
+        trade_long  := false
+        trade_bar   := na
+
+if trade_short and not na(tp_price) and not na(sl_price)
+    if low <= tp_price or high >= sl_price
+        entry_price := na
+        tp_price    := na
+        sl_price    := na
+        trade_short := false
+        trade_bar   := na
+
+// New signal processing
+if i_algo_enabled and not trade_long and not trade_short
+    if any_buy
+        float target = nearest_above
+        if not na(target) and target > close
+            float dist = target - close
+            entry_price := close
+            tp_price    := target
+            sl_price    := close - dist * i_algo_rr
+            trade_long  := true
+            trade_bar   := bar_index
+
+    else if any_sell
+        float target = nearest_below
+        if not na(target) and target < close
+            float dist = close - target
+            entry_price := close
+            tp_price    := target
+            sl_price    := close + dist * i_algo_rr
+            trade_short := true
+            trade_bar   := bar_index
+
+// Draw TP/SL lines for active trades
+var line tp_line = na
+var line sl_line = na
+var line entry_line = na
+var label tp_label = na
+var label sl_label = na
+
+if barstate.islast and i_algo_enabled
+    line.delete(tp_line)
+    line.delete(sl_line)
+    line.delete(entry_line)
+    label.delete(tp_label)
+    label.delete(sl_label)
+
+    if (trade_long or trade_short) and not na(entry_price)
+        int start_bar = not na(trade_bar) ? trade_bar : bar_index - 10
+        color tp_col = color.new(#26a69a, 0)
+        color sl_col = color.new(#ef5350, 0)
+        color en_col = color.new(color.white, 20)
+
+        entry_line := line.new(start_bar, entry_price, bar_index + 10, entry_price, color=en_col, style=line.style_dotted, width=1)
+        tp_line    := line.new(start_bar, tp_price, bar_index + 10, tp_price, color=tp_col, style=line.style_dashed, width=2)
+        sl_line    := line.new(start_bar, sl_price, bar_index + 10, sl_price, color=sl_col, style=line.style_dashed, width=2)
+
+        tp_label := label.new(bar_index + 12, tp_price, "TP " + str.tostring(tp_price, format.mintick), color=color.new(color.black, 100), textcolor=tp_col, style=label.style_label_left, size=size.small)
+        sl_label := label.new(bar_index + 12, sl_price, "SL " + str.tostring(sl_price, format.mintick), color=color.new(color.black, 100), textcolor=sl_col, style=label.style_label_left, size=size.small)
+
+// ─────────────────────────────────────────────
+// NO-ENTRY WARNING (no liquidity target)
+// ─────────────────────────────────────────────
+
+// Flag when signal fires but no target exists — potential trend reversal
+no_liq_buy  = any_buy  and na(nearest_above)
+no_liq_sell = any_sell and na(nearest_below)
+
+plotshape(no_liq_buy,  "No Target Buy",  shape.xcross, location.belowbar, color.new(color.orange, 0), size=size.small, text="No Target")
+plotshape(no_liq_sell, "No Target Sell", shape.xcross, location.abovebar, color.new(color.orange, 0), size=size.small, text="No Target")
+
+// ─────────────────────────────────────────────
+// INFO TABLE
+// ─────────────────────────────────────────────
+
+var table infoTable = table.new(position.top_right, 2, 5, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast
+    string trend_txt = is_bullish ? "BULLISH" : "BEARISH"
+    color  trend_col = is_bullish ? i_bull_color : i_bear_color
+
+    table.cell(infoTable, 0, 0, "Trend",    text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 0, trend_txt,   text_color=trend_col,  text_size=size.small)
+
+    table.cell(infoTable, 0, 1, "Ribbon",    text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 1, i_ribbon_type + " " + str.tostring(i_ribbon_len), text_color=color.white, text_size=size.small)
+
+    table.cell(infoTable, 0, 2, "Liq Above", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 2, na(nearest_above) ? "—" : str.tostring(nearest_above, format.mintick), text_color=i_liq_d_color, text_size=size.small)
+
+    table.cell(infoTable, 0, 3, "Liq Below", text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 3, na(nearest_below) ? "—" : str.tostring(nearest_below, format.mintick), text_color=i_liq_d_color, text_size=size.small)
+
+    string trade_txt = trade_long ? "LONG" : trade_short ? "SHORT" : "—"
+    color trade_col  = trade_long ? i_bull_color : trade_short ? i_bear_color : color.gray
+    table.cell(infoTable, 0, 4, "Trade",     text_color=color.white, text_size=size.small)
+    table.cell(infoTable, 1, 4, trade_txt,    text_color=trade_col,  text_size=size.small)
+
+// ─────────────────────────────────────────────
+// ALERTS
+// ─────────────────────────────────────────────
+
+alertcondition(t1_buy or t1_sell,   title="Tier 1 Signal", message="WH GER40: Tier 1 signal at {{close}}")
+alertcondition(t2_buy or t2_sell,   title="Tier 2 Signal", message="WH GER40: Tier 2 signal at {{close}}")
+alertcondition(t3_buy or t3_sell,   title="Tier 3 Signal", message="WH GER40: Tier 3 signal at {{close}}")
+alertcondition(any_buy or any_sell, title="Any Signal",    message="WH GER40: Signal at {{close}}")
+alertcondition(no_liq_buy or no_liq_sell, title="No Liquidity Target", message="WH GER40: Signal without liquidity target — possible trend reversal")
