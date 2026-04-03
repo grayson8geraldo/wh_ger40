@@ -227,7 +227,58 @@ nearest_liq_below_tf2 = f_nearest_below(liq_lows_tf2)
 
 // Overall nearest targets (closest from any TF)
 nearest_above = na(nearest_liq_above_tf1) ? nearest_liq_above_tf2 : na(nearest_liq_above_tf2) ? nearest_liq_above_tf1 : math.min(nearest_liq_above_tf1, nearest_liq_above_tf2)
-nearest_below = na(nearest_liq_below_tf1) ? nearest_liq_below_tf2 : na(nearest_liq_below_tf1) ? nearest_liq_below_tf1 : na(nearest_liq_below_tf2) ? nearest_liq_below_tf1 : math.max(nearest_liq_below_tf1, nearest_liq_below_tf2)
+nearest_below = na(nearest_liq_below_tf1) ? nearest_liq_below_tf2 : na(nearest_liq_below_tf2) ? nearest_liq_below_tf1 : math.max(nearest_liq_below_tf1, nearest_liq_below_tf2)
+
+// ─────────────────────────────────────────────
+// SIGNAL PROJECTION LINES
+// ─────────────────────────────────────────────
+
+var line proj_upper_t1 = na
+var line proj_lower_t1 = na
+var line proj_upper_t2 = na
+var line proj_lower_t2 = na
+var line proj_upper_t3 = na
+var line proj_lower_t3 = na
+var label proj_lbl_ut1 = na
+var label proj_lbl_lt1 = na
+var label proj_lbl_ut2 = na
+var label proj_lbl_lt2 = na
+var label proj_lbl_ut3 = na
+var label proj_lbl_lt3 = na
+
+if barstate.islast
+    line.delete(proj_upper_t1)
+    line.delete(proj_lower_t1)
+    line.delete(proj_upper_t2)
+    line.delete(proj_lower_t2)
+    line.delete(proj_upper_t3)
+    line.delete(proj_lower_t3)
+    label.delete(proj_lbl_ut1)
+    label.delete(proj_lbl_lt1)
+    label.delete(proj_lbl_ut2)
+    label.delete(proj_lbl_lt2)
+    label.delete(proj_lbl_ut3)
+    label.delete(proj_lbl_lt3)
+
+    int proj_len = 30
+
+    if i_t1_show and i_show_bands
+        proj_upper_t1 := line.new(bar_index, upper_t1, bar_index + proj_len, upper_t1, color=color.new(i_t1_color, 70), style=line.style_dotted, width=1)
+        proj_lower_t1 := line.new(bar_index, lower_t1, bar_index + proj_len, lower_t1, color=color.new(i_t1_color, 70), style=line.style_dotted, width=1)
+        proj_lbl_ut1 := label.new(bar_index + proj_len, upper_t1, "T1 Sell " + str.tostring(upper_t1, format.mintick), color=color.new(color.black, 100), textcolor=color.new(i_t1_color, 30), style=label.style_label_left, size=size.tiny)
+        proj_lbl_lt1 := label.new(bar_index + proj_len, lower_t1, "T1 Buy " + str.tostring(lower_t1, format.mintick), color=color.new(color.black, 100), textcolor=color.new(i_t1_color, 30), style=label.style_label_left, size=size.tiny)
+
+    if i_t2_show and i_show_bands
+        proj_upper_t2 := line.new(bar_index, upper_t2, bar_index + proj_len, upper_t2, color=color.new(i_t2_color, 70), style=line.style_dotted, width=1)
+        proj_lower_t2 := line.new(bar_index, lower_t2, bar_index + proj_len, lower_t2, color=color.new(i_t2_color, 70), style=line.style_dotted, width=1)
+        proj_lbl_ut2 := label.new(bar_index + proj_len, upper_t2, "T2 Sell " + str.tostring(upper_t2, format.mintick), color=color.new(color.black, 100), textcolor=color.new(i_t2_color, 30), style=label.style_label_left, size=size.tiny)
+        proj_lbl_lt2 := label.new(bar_index + proj_len, lower_t2, "T2 Buy " + str.tostring(lower_t2, format.mintick), color=color.new(color.black, 100), textcolor=color.new(i_t2_color, 30), style=label.style_label_left, size=size.tiny)
+
+    if i_t3_show and i_show_bands
+        proj_upper_t3 := line.new(bar_index, upper_t3, bar_index + proj_len, upper_t3, color=color.new(i_t3_color, 70), style=line.style_dotted, width=1)
+        proj_lower_t3 := line.new(bar_index, lower_t3, bar_index + proj_len, lower_t3, color=color.new(i_t3_color, 70), style=line.style_dotted, width=1)
+        proj_lbl_ut3 := label.new(bar_index + proj_len, upper_t3, "T3 Sell " + str.tostring(upper_t3, format.mintick), color=color.new(color.black, 100), textcolor=color.new(i_t3_color, 30), style=label.style_label_left, size=size.tiny)
+        proj_lbl_lt3 := label.new(bar_index + proj_len, lower_t3, "T3 Buy " + str.tostring(lower_t3, format.mintick), color=color.new(color.black, 100), textcolor=color.new(i_t3_color, 30), style=label.style_label_left, size=size.tiny)
 
 // ─────────────────────────────────────────────
 // DRAW LIQUIDITY LINES
@@ -285,6 +336,21 @@ if barstate.islast and i_liq_show
                 array.push(liq_lines, ln)
                 lb = label.new(bar_index + 22, lvl, str.tostring(lvl, format.mintick), color=color.new(color.black, 100), textcolor=i_liq_4h_color, style=label.style_label_left, size=size.small)
                 array.push(liq_labels, lb)
+
+    // Highlight nearest liquidity targets with "Liquidity Target" label
+    if not na(nearest_above)
+        color na_col = (not na(nearest_liq_above_tf1) and nearest_above == nearest_liq_above_tf1) ? i_liq_d_color : i_liq_4h_color
+        ln_target_up = line.new(bar_index - 30, nearest_above, bar_index + 30, nearest_above, color=na_col, style=line.style_solid, width=3)
+        array.push(liq_lines, ln_target_up)
+        lb_target_up = label.new(bar_index - 32, nearest_above, "▲ Liquidity Target " + str.tostring(nearest_above, format.mintick), color=color.new(color.black, 100), textcolor=na_col, style=label.style_label_right, size=size.normal)
+        array.push(liq_labels, lb_target_up)
+
+    if not na(nearest_below)
+        color nb_col = (not na(nearest_liq_below_tf1) and nearest_below == nearest_liq_below_tf1) ? i_liq_d_color : i_liq_4h_color
+        ln_target_dn = line.new(bar_index - 30, nearest_below, bar_index + 30, nearest_below, color=nb_col, style=line.style_solid, width=3)
+        array.push(liq_lines, ln_target_dn)
+        lb_target_dn = label.new(bar_index - 32, nearest_below, "▼ Liquidity Target " + str.tostring(nearest_below, format.mintick), color=color.new(color.black, 100), textcolor=nb_col, style=label.style_label_right, size=size.normal)
+        array.push(liq_labels, lb_target_dn)
 
 // ─────────────────────────────────────────────
 // TRADING ALGORITHM: TP/SL & FILTER
